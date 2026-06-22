@@ -7,8 +7,15 @@
  * ALL logging goes to stderr — MCP uses stdout for JSON-RPC.
  */
 
-import { pipeline } from "@huggingface/transformers";
+import { pipeline, env } from "@huggingface/transformers";
 import type { Pipeline } from "@huggingface/transformers";
+
+// ── HuggingFace mirror for China accessibility ─────────────────────────
+// Default to hf-mirror.com; override with HF_ENDPOINT env var if set.
+// e.g. HF_ENDPOINT=https://huggingface.co for direct access.
+if (!env.remoteHost || env.remoteHost === "https://huggingface.co/") {
+  env.remoteHost = process.env.HF_ENDPOINT || "https://hf-mirror.com/";
+}
 
 // ── Logging (stderr only) ──────────────────────────────────────────────
 function log(msg: string) {
@@ -26,10 +33,12 @@ let _initPromise: Promise<Pipeline> | null = null;
 // ── Progress callback ──────────────────────────────────────────────────
 function progressCallback(progress: any) {
   if (progress?.status === "progress" && progress?.file) {
-    const pct = progress?.progress != null
-      ? (progress.progress * 100).toFixed(1)
-      : "?";
-    log(`下载中 ${progress.file}: ${pct}%`);
+    // Transformers.js reports progress as 0-100 already (percentage).
+    // Only show every 10% to avoid log flood.
+    const pct = progress?.progress != null ? progress.progress : -1;
+    if (pct >= 0 && Math.floor(pct) % 10 === 0) {
+      log(`下载中 ${progress.file}: ${pct.toFixed(0)}%`);
+    }
   } else if (progress?.status === "ready") {
     log("模型加载完成");
   }
@@ -49,21 +58,28 @@ async function getPipeline(): Promise<Pipeline> {
     log(`加载嵌入模型: ${MODEL_ID} (${MODEL_DTYPE}, ~154 MB)`);
     log("首次使用需下载模型，约 30-60 秒...");
 
-    // Transformers.js pipeline() has complex generic overloads that tsc can't resolve.
-    // The runtime behavior is correct — just bypass the type checker here.
-    const pipe = (await (pipeline as any)(
-      "feature-extraction",
-      MODEL_ID,
-      {
-        dtype: MODEL_DTYPE,
-        progress_callback: progressCallback,
-      }
-    )) as Pipeline;
+    try {
+      // Transformers.js pipeline() has complex generic overloads that tsc can't resolve.
+      // The runtime behavior is correct — just bypass the type checker here.
+      const pipe = (await (pipeline as any)(
+        "feature-extraction",
+        MODEL_ID,
+        {
+          dtype: MODEL_DTYPE,
+          progress_callback: progressCallback,
+        }
+      )) as Pipeline;
 
-    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    log(`模型就绪，耗时 ${elapsed}s`);
-    _pipe = pipe;
-    return pipe;
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      log(`模型就绪，耗时 ${elapsed}s`);
+      _pipe = pipe;
+      return pipe;
+    } catch (err) {
+      // Clear the latch so subsequent calls retry instead of returning the
+      // same rejected promise forever.
+      _initPromise = null;
+      throw err;
+    }
   })();
 
   return _initPromise;
@@ -104,10 +120,6 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 }
 
 export async function warmupEmbeddings(): Promise<void> {
-  try {
-    await getPipeline();
-    log("嵌入模型预热完成");
-  } catch (err: any) {
-    log(`嵌入模型预热失败（首次搜索时会重试）: ${err.message}`);
-  }
+  await getPipeline();
+  log("嵌入模型预热完成");
 }
