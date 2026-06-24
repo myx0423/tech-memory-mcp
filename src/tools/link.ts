@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "better-sqlite3";
 import * as z from "zod";
 import { getKnowledge, createEdge } from "../db.js";
 import { ulid } from "ulidx";
@@ -8,7 +8,7 @@ function log(msg: string) {
   process.stderr.write(`[tech_link] ${msg}\n`);
 }
 
-export function registerLinkTool(server: McpServer, db: DatabaseSync) {
+export function registerLinkTool(server: McpServer, db: Database) {
   server.registerTool(
     "tech_link",
     {

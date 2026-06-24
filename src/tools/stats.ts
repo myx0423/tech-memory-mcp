@@ -1,11 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "better-sqlite3";
 import * as z from "zod";
 import { getStats } from "../db.js";
 
 // === 注册工具 ===
 
-export function registerStatsTool(server: McpServer, db: DatabaseSync) {
+export function registerStatsTool(server: McpServer, db: Database) {
   server.registerTool(
     "tech_stats",
     {
