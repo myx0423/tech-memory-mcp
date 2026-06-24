@@ -1,19 +1,19 @@
 # tech-memory-mcp
 
-中文优先的 AI Agent 技术知识记忆 MCP Server。
+面向 AI Agent 的中文技术知识记忆 MCP Server。
 
 **不只是记住"说了什么"，而是记住"学到了什么"。**
 
-## 和现有方案的区别
+`tech-memory-mcp` 让 AI 编程助手具备长期记忆能力：从每一次技术对话中自动提取有价值的知识点，存储到本地向量数据库，下次对话时自动检索相关经验。中文优先，完全离线。
 
-| | episodic-memory | OMEGA | tech-memory-mcp |
-|---|---|---|---|
-| 定位 | 对话存档 | 通用知识记忆 | **技术知识积累** |
-| 语言 | 英文 | 英文 | **中文优先** |
-| 提取 | ❌ 只存档 | ✅ 英文提取 | ✅ **中文提取** |
-| 知识图谱 | ❌ | ✅ | ✅ 有向关系 |
-| 嵌入模型 | all-MiniLM-L6 (23MB) | bge-small-en (90MB) | **jina-v2-base-zh (154MB)** |
-| 跨项目 | 按项目隔离 | 跨项目 | **跨项目终身累积** |
+### 核心特性
+
+- 🇨🇳 **中文优先**：基于 jina-v2-base-zh（768 维）嵌入模型，对中文技术内容进行语义理解
+- 🧠 **自动提取**：内置知识提取模板，LLM 可从对话中识别 decision/lesson/preference/fact/pattern 五类知识
+- 🔍 **混合检索**：向量语义搜索 + SQLite FTS5 全文搜索，RRF 融合排序，中英文混合查询
+- 🔗 **知识图谱**：支持知识点之间有向关系（依赖、替代、矛盾），构建技术知识网络
+- 📦 **完全本地**：SQLite + Transformers.js，无需任何外部服务或 API
+- 🔄 **跨项目累积**：所有项目的知识存入同一数据库，形成终身技术积累
 
 ## 快速开始
 
@@ -73,12 +73,18 @@ npx -y tech-memory-mcp@latest
 ## 开发
 
 ```bash
-git clone https://github.com/your-username/tech-memory-mcp.git
+git clone https://github.com/myx0423/tech-memory-mcp.git
 cd tech-memory-mcp
 npm install
 npm run build
 node dist/index.js  # 启动 MCP Server
 ```
+
+## 姊妹项目
+
+| 项目 | 说明 |
+|------|------|
+| [**remote-ops-mcp**](https://github.com/myx0423/remote-ops-mcp) | SSH 远程服务器管理：执行命令、部署服务、排查故障。操作失败时自动缓存踩坑上下文，配合 `tech_memory.tech_store` 形成运维知识闭环。 |
 
 ## License
 
