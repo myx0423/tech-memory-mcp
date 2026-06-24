@@ -22,11 +22,35 @@
 
 ### 第一步：安装
 
+#### 方式一：npx 安装（推荐）
+
 ```bash
 npx -y tech-memory-mcp@latest
 ```
 
 首次运行会自动下载嵌入模型（约 154MB，30-60 秒）。模型仅需下载一次，后续启动直接使用缓存。
+
+#### 方式二：从源码安装
+
+```bash
+git clone https://github.com/myx0423/tech-memory-mcp.git
+cd tech-memory-mcp
+npm install
+npm run build
+```
+
+然后将 `.mcp.json` 配置改为：
+
+```json
+{
+  "mcpServers": {
+    "tech-memory": {
+      "command": "node",
+      "args": ["/你的路径/tech-memory-mcp/dist/index.js"]
+    }
+  }
+}
+```
 
 ### 第二步：配置 Claude Code
 
