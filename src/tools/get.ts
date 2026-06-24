@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "better-sqlite3";
 import * as z from "zod";
 import { getKnowledge, getRelatedKnowledge, incrementAccess } from "../db.js";
 
@@ -21,7 +21,7 @@ const DIRECTION_LABELS: Record<string, string> = {
   incoming: "入边（关联知识点指向当前知识点）",
 };
 
-export function registerGetTool(server: McpServer, db: DatabaseSync) {
+export function registerGetTool(server: McpServer, db: Database) {
   server.registerTool(
     "tech_get",
     {

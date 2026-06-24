@@ -5,3 +5,7 @@ dist/
 *.db-shm
 .env
 .DS_Store
+Thumbs.db
+.vscode/
+*.tsbuildinfo
+*.log

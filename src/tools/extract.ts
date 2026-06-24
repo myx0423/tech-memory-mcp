@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "better-sqlite3";
 import * as z from "zod";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
@@ -92,7 +92,7 @@ function buildJsonSchema(): object {
 
 // === 注册工具 ===
 
-export function registerExtractTemplateTool(server: McpServer, db: DatabaseSync) {
+export function registerExtractTemplateTool(server: McpServer, db: Database) {
   server.registerTool(
     "tech_extract_template",
     {

@@ -9,12 +9,19 @@
 
 import { pipeline, env } from "@huggingface/transformers";
 import type { Pipeline } from "@huggingface/transformers";
+import { getLocalModelPath, getCacheDir } from "./config.js";
 
 // ── HuggingFace mirror for China accessibility ─────────────────────────
 // Default to hf-mirror.com; override with HF_ENDPOINT env var if set.
 // e.g. HF_ENDPOINT=https://huggingface.co for direct access.
 if (!env.remoteHost || env.remoteHost === "https://huggingface.co/") {
   env.remoteHost = process.env.HF_ENDPOINT || "https://hf-mirror.com/";
+}
+
+// ── Custom cache directory ─────────────────────────────────────────────
+const customCacheDir = getCacheDir();
+if (customCacheDir) {
+  env.cacheDir = customCacheDir;
 }
 
 // ── Logging (stderr only) ──────────────────────────────────────────────
@@ -55,15 +62,24 @@ async function getPipeline(): Promise<Pipeline> {
 
   _initPromise = (async () => {
     const start = Date.now();
-    log(`加载嵌入模型: ${MODEL_ID} (${MODEL_DTYPE}, ~154 MB)`);
-    log("首次使用需下载模型，约 30-60 秒...");
+    
+    // 检查是否配置了本地模型路径
+    const localModelPath = getLocalModelPath();
+    const modelSource = localModelPath || MODEL_ID;
+    
+    if (localModelPath) {
+      log(`从本地路径加载嵌入模型: ${localModelPath}`);
+    } else {
+      log(`加载嵌入模型: ${MODEL_ID} (${MODEL_DTYPE}, ~154 MB)`);
+      log("首次使用需下载模型，约 30-60 秒...");
+    }
 
     try {
       // Transformers.js pipeline() has complex generic overloads that tsc can't resolve.
       // The runtime behavior is correct — just bypass the type checker here.
       const pipe = (await (pipeline as any)(
         "feature-extraction",
-        MODEL_ID,
+        modelSource,
         {
           dtype: MODEL_DTYPE,
           progress_callback: progressCallback,
@@ -78,6 +94,14 @@ async function getPipeline(): Promise<Pipeline> {
       // Clear the latch so subsequent calls retry instead of returning the
       // same rejected promise forever.
       _initPromise = null;
+      
+      // 如果是本地路径加载失败，给出明确的错误提示
+      if (localModelPath) {
+        const errorMsg = `TECH_MEMORY_MODEL_PATH 路径无效或模型不兼容，请检查路径: ${localModelPath}`;
+        log(`错误: ${errorMsg}`);
+        throw new Error(errorMsg);
+      }
+      
       throw err;
     }
   })();

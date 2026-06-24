@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "better-sqlite3";
 import * as z from "zod";
 import { getSingleEmbedding } from "../embeddings.js";
 import {
@@ -7,6 +7,7 @@ import {
   searchFTS,
   getKnowledge,
   incrementAccess,
+  recordImpressions,
 } from "../db.js";
 import type { SearchResult } from "../types.js";
 
@@ -23,7 +24,7 @@ const RRF_K = 60;
 // technical symbols (hyphens, underscores, dots, hashes, plus signs, etc.)
 const PURE_ENGLISH_RE = /^[a-zA-Z0-9\s\-_+#.(){}\[\],:;!?/\\@$%^&*=~`'"<>|]+$/;
 
-export function registerSearchTool(server: McpServer, db: DatabaseSync) {
+export function registerSearchTool(server: McpServer, db: Database) {
   server.registerTool(
     "tech_search",
     {
@@ -67,11 +68,28 @@ export function registerSearchTool(server: McpServer, db: DatabaseSync) {
               "向量搜索权重 0-1，默认 0.7。0=纯全文关键词搜索，" +
                 "1=纯向量语义搜索。中文语义查询建议 0.6-0.8"
             ),
+          min_confidence: z
+            .number()
+            .min(0, "置信度不能小于 0")
+            .max(1, "置信度不能大于 1")
+            .optional()
+            .default(0.0)
+            .describe("最低置信度阈值 0-1，默认 0.0。过滤掉置信度低于此值的结果"),
+          include_outdated: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe("是否包含已标记过期的知识（is_outdated=1），默认 false"),
+          track: z
+            .boolean()
+            .optional()
+            .default(true)
+            .describe("是否记录曝光事件用于使用反馈闭环，默认 true。设为 false 可跳过记录（用于调试）"),
         })
         .strict(),
     },
     async (params) => {
-      const { query, limit, category, project, hybrid_alpha } = params;
+      const { query, limit, category, project, hybrid_alpha, min_confidence = 0.0, include_outdated = false, track = true } = params;
 
       // Adjust alpha for pure-English technical queries — English terms are
       // better served by FTS, so we cap the vector weight at 0.5.
@@ -218,6 +236,21 @@ export function registerSearchTool(server: McpServer, db: DatabaseSync) {
             continue;
           }
 
+          // Apply confidence filter
+          if (entry.confidence < min_confidence) {
+            continue;
+          }
+
+          // Apply outdated filter
+          if (!include_outdated && entry.is_outdated === 1) {
+            continue;
+          }
+
+          // Apply confidence and adoption rate weight to score
+          // 最终得分 = RRF分数 * confidence * (0.7 + 0.3 * adoption_rate)
+          const adoptionRate = entry.adoption_count / Math.max(entry.impression_count, 1);
+          const weightedScore = score * entry.confidence * (0.7 + 0.3 * adoptionRate);
+
           const vectorRank = vecRanks.has(id)
             ? vecRanks.get(id)! + 1 // Convert to 1-based rank
             : undefined;
@@ -227,9 +260,11 @@ export function registerSearchTool(server: McpServer, db: DatabaseSync) {
 
           results.push({
             entry,
-            score: Math.round(score * 1_000_000) / 1_000_000, // Round to 6 decimal places
+            score: Math.round(weightedScore * 1_000_000) / 1_000_000, // Round to 6 decimal places
             vector_rank: vectorRank,
             fts_rank: ftsRank,
+            confidence: entry.confidence,
+            is_outdated: entry.is_outdated === 1,
           });
         }
 
@@ -238,7 +273,20 @@ export function registerSearchTool(server: McpServer, db: DatabaseSync) {
           incrementAccess(db, result.entry.id);
         }
 
-        // Step 8: Handle empty results after filtering
+        // Step 8: Async record impressions (non-blocking)
+        if (track && results.length > 0) {
+          const knowledgeIds = results.map(r => r.entry.id);
+          setImmediate(() => {
+            try {
+              recordImpressions(db, knowledgeIds, query);
+              log(`已异步记录 ${knowledgeIds.length} 条曝光事件`);
+            } catch (err) {
+              log(`记录曝光事件失败: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          });
+        }
+
+        // Step 9: Handle empty results after filtering
         if (results.length === 0) {
           const filterDesc: string[] = [];
           if (category) filterDesc.push(`类型=${category}`);

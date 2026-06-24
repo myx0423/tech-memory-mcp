@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "better-sqlite3";
 import * as z from "zod";
 import { getSingleEmbedding } from "../embeddings.js";
 import {
@@ -9,15 +9,30 @@ import {
   getKnowledge,
   updateKnowledge,
   incrementAccess,
+  getEmbedding,
+  cosineSimilarity,
 } from "../db.js";
 import { ulid } from "ulidx";
+import type { KnowledgeCategory } from "../types.js";
 
 // === Logging (stderr only — stdout is MCP JSON-RPC) ===
 function log(msg: string) {
   process.stderr.write(`[tech_store] ${msg}\n`);
 }
 
-export function registerStoreTool(server: McpServer, db: DatabaseSync) {
+// === Default decay rate by category ===
+function getDefaultDecayRate(category: string): number {
+  const rates: Record<string, number> = {
+    fact: 0.05,
+    decision: 0.02,
+    lesson: 0.01,
+    preference: 0.03,
+    pattern: 0.01,
+  };
+  return rates[category] ?? 0.02;
+}
+
+export function registerStoreTool(server: McpServer, db: Database) {
   server.registerTool(
     "tech_store",
     {
@@ -68,6 +83,28 @@ export function registerStoreTool(server: McpServer, db: DatabaseSync) {
               "语义去重相似度阈值 0-1，默认 0.85。两条知识的余弦相似度达到此值即视为重复，" +
                 "将更新已有条目而非创建新条目。设为 1.0 可完全禁用来重"
             ),
+          confidence: z
+            .number()
+            .min(0, "置信度不能小于 0")
+            .max(1, "置信度不能大于 1")
+            .optional()
+            .default(0.7)
+            .describe("初始置信度 0-1，默认 0.7。表示对这条知识的信任程度"),
+          expires_at: z
+            .string()
+            .optional()
+            .describe("过期时间（ISO 8601 格式，如 '2027-01-01'）。不传则永不过期"),
+          decay_rate: z
+            .number()
+            .min(0, "衰减速率不能小于 0")
+            .max(1, "衰减速率不能大于 1")
+            .optional()
+            .describe("衰减速率 0-1，不传则按类型取默认值（fact=0.05, decision=0.02, lesson=0.01, preference=0.03, pattern=0.01）"),
+          force: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe("强制存储：忽略冲突检测直接存储，默认 false"),
         })
         .strict(),
     },
@@ -80,10 +117,14 @@ export function registerStoreTool(server: McpServer, db: DatabaseSync) {
         project,
         importance,
         dedup_threshold,
+        confidence,
+        expires_at,
+        decay_rate,
+        force,
       } = params;
 
       log(
-        `开始存储：类别=${category} 内容长度=${content.length} 去重阈值=${dedup_threshold} 重要性=${importance}`
+        `开始存储：类别=${category} 内容长度=${content.length} 去重阈值=${dedup_threshold} 重要性=${importance} 强制=${force}`
       );
 
       try {
@@ -96,6 +137,33 @@ export function registerStoreTool(server: McpServer, db: DatabaseSync) {
         log(`正在检索语义近邻进行去重检查（top-5）...`);
         const candidates = searchVectorJS(db, embedding, 5);
         log(`找到 ${candidates.length} 个候选近邻`);
+
+        // Step 2.5: Conflict detection (before dedup)
+        if (!force) {
+          log("执行冲突检测...");
+          const conflicts = detectConflicts(db, content, category, project, candidates, embedding);
+          
+          if (conflicts.length > 0) {
+            log(`检测到 ${conflicts.length} 个冲突`);
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    {
+                      stored: false,
+                      conflicts,
+                      message: `⚠️ 检测到 ${conflicts.length} 个潜在冲突。使用 force=true 强制存储，或使用 tech_resolve 处理冲突。\n\n` +
+                        conflicts.map(c => `• ${c.conflict_type}: ${c.title} (相似度 ${(c.similarity * 100).toFixed(1)}%)`).join("\n"),
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+            };
+          }
+        }
 
         for (const candidate of candidates) {
           const similarity = candidate.similarity;
@@ -174,6 +242,12 @@ export function registerStoreTool(server: McpServer, db: DatabaseSync) {
           source_conversation,
           project,
           importance,
+          confidence,
+          expires_at: expires_at ?? null,
+          decay_rate: decay_rate ?? getDefaultDecayRate(category),
+          impression_count: 0,
+          adoption_count: 0,
+          last_impression_at: null,
         });
 
         // Store vector embedding
@@ -226,4 +300,108 @@ export function registerStoreTool(server: McpServer, db: DatabaseSync) {
       }
     }
   );
+}
+
+// === Conflict detection helpers ===
+
+function checkConflict(
+  newContent: string,
+  existingContent: string,
+  newCategory: string,
+  existingCategory: string,
+  newProject: string | undefined,
+  existingProject: string | undefined,
+  similarity: number
+): "duplicate" | "contradiction" | "outdated" | null {
+  // Rule 1: Same project + same category + title similarity > 0.85 → duplicate
+  if (newProject && existingProject && newProject === existingProject &&
+      newCategory === existingCategory && similarity > 0.85) {
+    return "duplicate";
+  }
+
+  // Rule 2: Contradictory keywords
+  const contradictionPairs = [
+    ["选择A", "选择B"],
+    ["不推荐", "推荐"],
+    ["失败", "成功"],
+    ["避免", "使用"],
+    ["不要", "应该"],
+    ["错误", "正确"],
+  ];
+
+  const newLower = newContent.toLowerCase();
+  const existingLower = existingContent.toLowerCase();
+
+  for (const [a, b] of contradictionPairs) {
+    const hasAInNew = newLower.includes(a.toLowerCase());
+    const hasBInExisting = existingLower.includes(b.toLowerCase());
+    const hasBInNew = newLower.includes(b.toLowerCase());
+    const hasAInExisting = existingLower.includes(a.toLowerCase());
+
+    if ((hasAInNew && hasBInExisting) || (hasBInNew && hasAInExisting)) {
+      if (similarity > 0.75) {
+        return "contradiction";
+      }
+    }
+  }
+
+  // Rule 3: Same project, both decisions, same tech selection but opposite conclusions
+  if (newProject && existingProject && newProject === existingProject &&
+      newCategory === "decision" && existingCategory === "decision" && similarity > 0.7) {
+    return "contradiction";
+  }
+
+  return null;
+}
+
+function detectConflicts(
+  db: Database,
+  newContent: string,
+  newCategory: string,
+  newProject: string | undefined,
+  candidates: Array<{ knowledge_id: string; similarity: number }>,
+  newEmbedding: Float32Array
+): Array<{
+  id: string;
+  title: string;
+  similarity: number;
+  conflict_type: "duplicate" | "contradiction" | "outdated";
+  suggestion: "overwrite" | "link" | "keep_both";
+}> {
+  const conflicts: Array<{
+    id: string;
+    title: string;
+    similarity: number;
+    conflict_type: "duplicate" | "contradiction" | "outdated";
+    suggestion: "overwrite" | "link" | "keep_both";
+  }> = [];
+
+  for (const candidate of candidates) {
+    if (candidate.similarity < 0.75) continue;
+
+    const existing = getKnowledge(db, candidate.knowledge_id);
+    if (!existing) continue;
+
+    const conflictType = checkConflict(
+      newContent,
+      existing.content,
+      newCategory,
+      existing.category,
+      newProject,
+      existing.project,
+      candidate.similarity
+    );
+
+    if (conflictType) {
+      conflicts.push({
+        id: existing.id,
+        title: existing.content.slice(0, 50),
+        similarity: candidate.similarity,
+        conflict_type: conflictType,
+        suggestion: conflictType === "duplicate" ? "overwrite" : conflictType === "contradiction" ? "link" : "keep_both",
+      });
+    }
+  }
+
+  return conflicts;
 }

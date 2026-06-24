@@ -8,6 +8,16 @@ import { registerExtractTemplateTool } from "./tools/extract.js";
 import { registerLinkTool } from "./tools/link.js";
 import { registerGetTool } from "./tools/get.js";
 import { registerStatsTool } from "./tools/stats.js";
+import { registerAutoExtractTool } from "./tools/auto_extract.js";
+import { registerConfirmTool } from "./tools/confirm.js";
+import { registerDecayTool } from "./tools/decay.js";
+import { registerOutdatedTool } from "./tools/outdated.js";
+import { registerUsageStatsTool } from "./tools/usage_stats.js";
+import { registerConflictScanTool } from "./tools/conflict_scan.js";
+import { registerResolveTool } from "./tools/resolve.js";
+import { registerExportTool } from "./tools/export.js";
+import { registerImportTool } from "./tools/import.js";
+import { registerBackupTool } from "./tools/backup.js";
 import { warmupEmbeddings } from "./embeddings.js";
 
 function log(msg: string) {
@@ -32,13 +42,23 @@ async function main() {
     version: "0.1.0",
   });
 
-  // 注册所有工具
+  // 注册工具
   registerSearchTool(server, db);
   registerStoreTool(server, db);
   registerExtractTemplateTool(server, db);
   registerLinkTool(server, db);
   registerGetTool(server, db);
   registerStatsTool(server, db);
+  registerAutoExtractTool(server, db);
+  registerConfirmTool(server, db);
+  registerDecayTool(server, db);
+  registerOutdatedTool(server, db);
+  registerUsageStatsTool(server, db);
+  registerConflictScanTool(server, db);
+  registerResolveTool(server, db);
+  registerExportTool(server, db);
+  registerImportTool(server, db);
+  registerBackupTool(server, db);
 
   // 通过 stdio 连接
   const transport = new StdioServerTransport();
